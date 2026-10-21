@@ -18,13 +18,13 @@ Faker.seed(42)
 random.seed(42)
 
 # Configuration Parameters (pymssql individual fields)
-SQL_SERVER   = os.getenv("SQL_SERVER",   "localhost")
-SQL_PORT     = int(os.getenv("SQL_PORT", "1433"))
-SQL_DATABASE = os.getenv("SQL_DATABASE", "banking-oltp")
-SQL_USER     = os.getenv("SQL_USER",     "sa")
-SQL_PASSWORD = os.getenv("SQL_PASSWORD", "YourStrongPassword!")
-S3_BUCKET    = os.getenv("S3_BUCKET_NAME", "fintech-lakehouse-landing")
-AWS_REGION   = os.getenv("AWS_REGION",     "us-east-1")
+SQL_SERVER   = os.getenv("SQL_SERVER")
+SQL_PORT     = int(os.getenv("SQL_PORT"))
+SQL_DATABASE = os.getenv("SQL_DATABASE")
+SQL_USER     = os.getenv("SQL_USER")
+SQL_PASSWORD = os.getenv("SQL_PASSWORD")
+S3_BUCKET    = os.getenv("S3_BUCKET_NAME")
+AWS_REGION   = os.getenv("AWS_REGION")
 
 TOTAL_CUSTOMERS = 10_000
 TOTAL_ACCOUNTS = 15_000
@@ -48,7 +48,7 @@ def get_db_connection():
         user=SQL_USER,
         password=SQL_PASSWORD,
         login_timeout=30,
-        conn_properties="",      # let pymssql negotiate TLS 1.2 with Azure SQL
+        conn_properties="",      
     )
 
 
