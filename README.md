@@ -19,11 +19,13 @@ This project implements a **Banking Lakehouse & Customer 360 Platform** on Datab
 
 4. [Dimensional Star Schema & Mart Design](#dimensional-star-schema--mart-design)
 
-5. [Repository & Directory Structure](#repository--directory-structure)
+5. [Design Decisions](#design-decisions)
 
-6. [Deployment & Operational Runbook](#deployment--operational-runbook)
+6. [Repository & Directory Structure](#repository--directory-structure)
 
-7. [Future Enterprise Scope](#future-enterprise-scope)
+7. [Deployment & Operational Runbook](#deployment--operational-runbook)
+
+8. [Future Enterprise Scope](#future-enterprise-scope)
 
 ## Architecture Overview
 
@@ -36,15 +38,13 @@ This project implements a **Banking Lakehouse & Customer 360 Platform** on Datab
 └──────────────────┬────────────────────┘                    └──────────────────┬────────────────────┘
                    │                                                            │
 ═══════════════════╪════════════════════════════════════════════════════════════╪═════════════════════════════
-                   │ DATABRICKS WORKFLOW ORCHESTRATION (SCHEDULED BATCH JOB)     │
+                   │ DATABRICKS WORKFLOW ORCHESTRATION (SCHEDULED BATCH JOB)    │
 ═══════════════════╪════════════════════════════════════════════════════════════╪═════════════════════════════
                    ▼                                                            │
 ┌────────────────────────────────────────────────────────┐                      │
 │ TASK 1: Serverless Python Ingestion Task               │                      │
 │ File: tasks/00_ingest_azure_sql.py                     │                      │
 │ - Evaluates MAX(last_updated) watermark from Delta log │                      │
-│ - 5-minute lookback buffer for in-flight commits       │                      │
-│ - Extracts delta slice: WHERE last_updated >= buffer   │                      │
 │ - Appends rows to Bronze Delta tables                  │                      │
 │ - Runtime: ~10-15s (Zero idle compute)                 │                      │
 └──────────────────────────┬─────────────────────────────┘                      │
@@ -56,15 +56,15 @@ This project implements a **Banking Lakehouse & Customer 360 Platform** on Datab
 │  [BRONZE LAYER - Append-Only & Schema Evolution]                                                       │
 │  - bronze.customers_raw    : Delta append stream                                                       │
 │  - bronze.accounts_raw     : Delta append stream                                                       │
-│  - bronze.transactions_raw : Auto Loader (`read_files`) streaming ingestion from S3                   │
+│  - bronze.transactions_raw : Auto Loader (`read_files`) streaming ingestion from S3                    │
 │                                                                                                        │
-│  [SILVER LAYER - Data Quality, Liquid Clustering & AUTO CDC]                                          │
-│  - silver.transactions_clean : Delta table, positive amounts, pre-signed amount semantics     │
-│  - silver.customers_history  : AUTO CDC SCD Type 2 (__START_AT, __END_AT, tombstone deletes)          │
+│  [SILVER LAYER - Data Quality& AUTO CDC]                                                               │
+│  - silver.transactions_clean : Delta table, standardization                                            │
+│  - silver.customers_history  : AUTO CDC SCD Type 2 (__START_AT, __END_AT, tombstone deletes)           │
 │  - silver.accounts_current   : AUTO CDC SCD Type 1 (In-place operational state upserts)                │
 │                                                                                                        │
-│  [GOLD LAYER - Star Schema, Audited Facts & Scalable Rollups]                                         │
-│  - gold.dim_date             : Fiscal financial calendar (2020–2030)                                   │
+│  [GOLD LAYER - Star Schema, Audited Facts & Scalable Rollups]                                          │
+│  - gold.dim_date             : Generated calendar                                                      │
 │  - gold.dim_customer_history : Full SCD2 dimension with deterministic SHA-256 surrogate keys (SKs)    │
 │  - gold.dim_customer         : Active dimension slice (current active version)                         │
 │  - gold.dim_account          : Operational product dimension                                           │
@@ -84,7 +84,7 @@ This project implements a **Banking Lakehouse & Customer 360 Platform** on Datab
 
 - **`bronze.transactions_raw`**: Ingested continuously from Amazon S3 via Databricks Auto Loader (`read_files`). Configured with `schemaEvolutionMode => 'addNewColumns'` and system tracking attributes (`_source_file`, `_ingest_timestamp`).
 
-- **`bronze.customers_raw` & `bronze.accounts_raw`**: Append-only Delta tables fed by Task 1 serverless Python JDBC extraction with a (not sure 5-minute lookback buffer to prevent dropping in-flight OLTP transactions.)
+- **`bronze.customers_raw` & `bronze.accounts_raw`**: Append-only Delta tables fed by Task 1 serverless Python JDBC extraction.
 
 ### Silver Layer (Cleansing, Data Quality & AUTO CDC)
 
@@ -122,6 +122,32 @@ Check out the [Schema Guide](schema_guide.md) for more details.
 
 ![Data Model](databricks_banking_datamodel.png)
 
+## Design Decisions
+
+### 1. Separating Azure SQL Ingestion from the Main Pipeline
+
+Lakeflow works best with streaming sources. Standard JDBC reads from Azure SQL are batch-oriented, which made reliable incremental loading difficult inside the pipeline.
+
+Azure SQL extraction was therefore moved to a separate serverless task. This task uses a watermark on `last_updated` to pull only new or changed rows into Bronze. The Lakeflow pipeline then starts from the Bronze Delta tables.
+
+This keeps incremental loads clean and removes the dependency on Azure SQL being online during every pipeline run.
+
+### 2. Preserving Historical Customer State
+
+Customer attributes such as risk score, segment, and contact details change over time. Using only the latest version would cause historical transactions to pick up incorrect attributes.
+
+Customer data is maintained as SCD Type 2. When building the fact table, each transaction is joined to the customer version that was valid at the time of the transaction (As-Of join on `__START_AT` / `__END_AT`). A deterministic surrogate key is also generated so the historical link remains stable.
+
+This ensures point-in-time correctness for reporting and risk analysis.
+
+### 3. Reducing Recompute Cost for Customer 360 and RFM
+
+Calculating lifetime metrics directly from raw transactions is expensive, especially when multiple users or Genie queries hit the same logic. Global ranking functions used in RFM are also costly if recomputed on every run.
+
+Transactions are first aggregated into monthly summaries, then rolled up into lifetime summaries. RFM scoring runs only on the pre-aggregated customer metrics and is kept as a separate materialized view. `customer_360` itself is implemented as a standard SQL view that joins the already-prepared tables.
+
+As a result, most of the heavy work is done once during the pipeline, and interactive queries stay lightweight.
+
 ## Repository & Directory Structure
 
 ```
@@ -158,19 +184,17 @@ CREATE SCHEMA IF NOT EXISTS banking_lakehouse.gold;
 
 ### 2. Configure Unity Catalog Secret Scope
 
-Using the Databricks CLI, register external Azure SQL credentials:
+In Databricks Notebook, register external Azure SQL credentials:
 
 ```
-databricks secrets create-scope banking_scope
+%python
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
 
-databricks secrets put-secret banking_scope azure_sql_jdbc_url \
-  --string-value "jdbc:sqlserver://<server>.database.windows.net:1433;database=banking-oltp;encrypt=true;trustServerCertificate=false;"
+w.secrets.put_secret(scope="banking_scope", key="azure_sql_jdbc_url", string_value="jdbc:sqlserver://<server>.database.windows.net:1433;database=banking-oltp;encrypt=true;trustServerCertificate=false;")
+w.secrets.put_secret(scope="banking_scope", key="azure_sql_user", string_value="<user>")
+w.secrets.put_secret(scope="banking_scope", key="azure_sql_password", string_value="<password>")
 
-databricks secrets put-secret banking_scope azure_sql_user \
-  --string-value "sqladmin"
-
-databricks secrets put-secret banking_scope azure_sql_password \
-  --string-value "<YourPassword>"
 ```
 
 ### 3. Generate Baseline Data
@@ -186,7 +210,7 @@ AWS_REGION=your_region
 AWS_ACCESS_KEY_ID=<your-key>
 AWS_SECRET_ACCESS_KEY=<your-secret>
 SQL_SERVER=<server>.database.windows.net
-SQL_PORT=1433
+SQL_PORT=<port>
 SQL_DATABASE=<your-db>
 SQL_USER=<user>
 SQL_PASSWORD=<password>
