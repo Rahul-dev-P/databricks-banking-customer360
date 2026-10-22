@@ -1,0 +1,19 @@
+# ────────────────────────────────────────────────────────────────
+# Requirements for mock_data/datagen_and_cdc_simulator.py
+# Install: pip install -r mock_data/requirements.txt
+# ────────────────────────────────────────────────────────────────
+
+# Fake data generation
+Faker==40.43.0
+
+# Azure SQL connectivity (pure-Python TDS driver, no ODBC needed)
+pymssql==2.4.4
+
+# AWS S3 uploads
+boto3==1.43.114
+botocore==1.43.114
+s3transfer==0.19.2
+jmespath==1.1.0
+
+# .env file loading
+python-dotenv==1.0.1
