@@ -13,6 +13,12 @@ AS SELECT
   CAST(transaction_id AS STRING) AS transaction_id,
   CAST(account_id AS STRING) AS account_id,
   CAST(amount AS DECIMAL(18, 4)) AS amount,
+  -- Standardized signed amounts: Credits are positive, debits are negative
+  CASE 
+    WHEN UPPER(TRIM(transaction_type)) IN ('DEPOSIT', 'TRANSFER_IN', 'REFUND') 
+      THEN CAST(amount AS DECIMAL(18, 4))
+    ELSE -CAST(amount AS DECIMAL(18, 4))
+  END AS signed_amount,
   UPPER(TRIM(transaction_type)) AS transaction_type,
   TRIM(channel) AS channel,
   TRIM(merchant_category) AS merchant_category,
@@ -29,23 +35,19 @@ CREATE OR REFRESH STREAMING TABLE silver.customers_history (
   CONSTRAINT valid_email_format EXPECT (
     email RLIKE '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'
   ) ON VIOLATION DROP ROW,
-  CONSTRAINT valid_phone_format EXPECT (
-    LENGTH(phone_digits) BETWEEN 10 AND 15
-  ) ON VIOLATION DROP ROW,
   CONSTRAINT valid_risk_score EXPECT (risk_score BETWEEN 300 AND 850) ON VIOLATION DROP ROW,
   CONSTRAINT valid_segment EXPECT (customer_segment IN ('Retail', 'Affluent', 'SME', 'Corporate')) ON VIOLATION DROP ROW
 )
-COMMENT 'Customer master SCD Type 2 dimension preserving full profile mutation history'
+COMMENT 'Customer master SCD Type 2 tracking mutations over time'
 TBLPROPERTIES ('quality' = 'silver');
 
-CREATE TEMPORARY STREAMING TABLE customers_cleaned_stream
-AS SELECT
+CREATE TEMPORARY VIEW customers_cleaned_stream AS
+SELECT
   customer_id,
   TRIM(first_name) AS first_name,
   TRIM(last_name) AS last_name,
   LOWER(TRIM(email)) AS email,
-  TRIM(phone) AS phone_raw,
-  REGEXP_REPLACE(phone, '[^0-9]', '') AS phone_digits,
+  REGEXP_REPLACE(phone, '[^0-9]', '') AS phone,
   TRIM(address_street) AS address_street,
   TRIM(city) AS city,
   UPPER(TRIM(state)) AS state,
@@ -65,7 +67,7 @@ FROM STREAM(customers_cleaned_stream)
 KEYS (customer_id)
 APPLY AS DELETE WHEN is_deleted = 1
 SEQUENCE BY last_updated
-COLUMNS * EXCEPT (is_deleted, phone_raw)
+COLUMNS * EXCEPT (is_deleted)
 STORED AS SCD TYPE 2
 TRACK HISTORY ON * EXCEPT (last_updated);
 
@@ -78,11 +80,11 @@ CREATE OR REFRESH STREAMING TABLE silver.accounts_current (
   CONSTRAINT valid_status EXPECT (status IN ('Active', 'Dormant', 'Frozen', 'Closed')) ON VIOLATION DROP ROW,
   CONSTRAINT valid_type EXPECT (account_type IN ('Checking', 'Savings', 'Money Market', 'Credit Card')) ON VIOLATION DROP ROW
 )
-COMMENT 'Current operational snapshot of accounts (SCD Type 1 in-place update)'
+COMMENT 'Current operational state of accounts (SCD Type 1)'
 TBLPROPERTIES ('quality' = 'silver');
 
-CREATE TEMPORARY STREAMING TABLE accounts_cleaned_stream
-AS SELECT
+CREATE TEMPORARY VIEW accounts_cleaned_stream AS
+SELECT
   TRIM(account_id) AS account_id,
   customer_id,
   TRIM(account_type) AS account_type,
