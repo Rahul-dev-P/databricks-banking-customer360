@@ -77,7 +77,7 @@ CREATE FLOW silver_customers_scd2_flow AS
 AUTO CDC INTO silver.customers_history
 FROM STREAM(customers_cleaned_stream)
 KEYS (customer_id)
-APPLY AS DELETE WHEN is_deleted = 1
+APPLY AS DELETE WHEN is_deleted = TRUE
 SEQUENCE BY last_updated
 COLUMNS * EXCEPT (is_deleted)
 STORED AS SCD TYPE 2
@@ -111,7 +111,7 @@ CREATE FLOW silver_accounts_scd1_flow AS
 AUTO CDC INTO silver.accounts_current
 FROM STREAM(accounts_cleaned_stream)
 KEYS (account_id)
-APPLY AS DELETE WHEN is_deleted = 1
+APPLY AS DELETE WHEN is_deleted = TRUE
 SEQUENCE BY last_updated
 COLUMNS * EXCEPT (is_deleted)
 STORED AS SCD TYPE 1;
