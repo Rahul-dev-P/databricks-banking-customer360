@@ -216,7 +216,9 @@ SQL_USER=<user>
 SQL_PASSWORD=<password>
 
 # Run — seeds Azure SQL (customers + accounts) AND uploads 7-day transactions to S3
-python mock_data/datagen_and_cdc_simulator.py --mode initial
+python datagen/datagen_and_cdc_simulator.py --mode initial --storage volume
+or
+python datagen/datagen_and_cdc_simulator.py --mode initial --storage s3
 
 ```
 
@@ -245,7 +247,9 @@ python mock_data/datagen_and_cdc_simulator.py --mode initial
 Inject customer mutations (credit score shifts, address changes, soft deletions) and new transaction files:
 
 ```
-python datagen/datagen_and_cdc_simulator.py --mode cdc
+python datagen/datagen_and_cdc_simulator.py --mode cdc --storage volume
+or
+python datagen/datagen_and_cdc_simulator.py --mode cdc --storage s3
 ```
 
 Trigger `Job_Daily_Banking_Lakehouse_Batch` in Databricks Workflows. Inspect the execution:
