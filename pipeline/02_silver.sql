@@ -1,5 +1,6 @@
 -- -----------------------------------------------------------------------------
--- 1. Silver Transactions (Expectations & Cleaning)
+-- 1. Silver Transactions (Expectations, Cleaning & Dedup via AUTO CDC)
+--    AUTO CDC keyed on transaction_id collapses duplicate deliveries (latest wins)
 -- -----------------------------------------------------------------------------
 CREATE OR REFRESH STREAMING TABLE silver.transactions_clean (
   CONSTRAINT valid_txn_id EXPECT (transaction_id IS NOT NULL) ON VIOLATION DROP ROW,
@@ -7,15 +8,19 @@ CREATE OR REFRESH STREAMING TABLE silver.transactions_clean (
   CONSTRAINT positive_amount EXPECT (amount > 0.0) ON VIOLATION DROP ROW,
   CONSTRAINT valid_timestamp EXPECT (transaction_timestamp <= CURRENT_TIMESTAMP()) ON VIOLATION DROP ROW
 )
-COMMENT 'Sanitized and validated financial transaction event stream'
-TBLPROPERTIES ('quality' = 'silver')
-AS SELECT
+COMMENT 'Sanitized and validated financial transactions, deduplicated on transaction_id,account_id'
+TBLPROPERTIES ('quality' = 'silver');
+
+CREATE TEMPORARY VIEW transactions_cleaned_stream AS
+SELECT
   CAST(transaction_id AS STRING) AS transaction_id,
   CAST(account_id AS STRING) AS account_id,
   CAST(amount AS DECIMAL(18, 4)) AS amount,
   -- Standardized signed amounts: Credits are positive, debits are negative
+  -- Credit types verified against source data: only DEPOSIT occurs as a credit;
+  -- TRANSFER, WITHDRAWAL, FEE, POS PURCHASE, ONLINE PAYMENT are debits
   CASE 
-    WHEN UPPER(TRIM(transaction_type)) IN ('DEPOSIT', 'TRANSFER_IN', 'REFUND') 
+    WHEN UPPER(TRIM(transaction_type)) IN ('DEPOSIT') 
       THEN CAST(amount AS DECIMAL(18, 4))
     ELSE -CAST(amount AS DECIMAL(18, 4))
   END AS signed_amount,
@@ -26,6 +31,13 @@ AS SELECT
   _source_file,
   CURRENT_TIMESTAMP() AS _cleaned_at
 FROM STREAM(bronze.transactions_raw);
+
+CREATE FLOW silver_transactions_cdc_flow AS
+AUTO CDC INTO silver.transactions_clean
+FROM STREAM(transactions_cleaned_stream)
+KEYS (transaction_id,account_id)
+SEQUENCE BY transaction_timestamp
+STORED AS SCD TYPE 1;
 
 -- -----------------------------------------------------------------------------
 -- 2. Silver Customers History (SCD Type 2 via AUTO CDC)
