@@ -397,7 +397,7 @@ def simulate_cdc_batch(storage_backend: str):
             status       = v.status,
             last_updated = v.last_updated
         FROM (VALUES %s) AS v(status, last_updated, account_id)
-        WHERE a.account_id = v.account_id::uuid;
+        WHERE a.account_id = v.account_id::varchar;
         """,
         update_acc_rows,
     )
